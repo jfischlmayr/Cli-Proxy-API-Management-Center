@@ -65,6 +65,13 @@ export function formatDateTime(date: string | Date, locale?: string): string {
 }
 
 /**
+ * Format a UTC timestamp into the user's local timezone.
+ */
+export function formatUtcToLocalDateTime(date: string | Date, locale?: string): string {
+  return formatDateTime(date, locale);
+}
+
+/**
  * 将 Unix 时间戳（秒/毫秒/微秒/纳秒）格式化为本地时间字符串
  */
 export function formatUnixTimestamp(value: unknown, locale?: string): string {

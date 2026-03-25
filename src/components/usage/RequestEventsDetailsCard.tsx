@@ -13,6 +13,7 @@ import type {
 } from '@/types';
 import type { AuthFileItem } from '@/types/authFile';
 import type { CredentialInfo } from '@/types/sourceInfo';
+import { formatUtcToLocalDateTime } from '@/utils/format';
 import { buildSourceInfoMap, resolveSourceDisplay } from '@/utils/sourceResolver';
 import {
   collectUsageDetails,
@@ -159,7 +160,7 @@ export function RequestEventsDetailsCard({
           id: `${timestamp}-${model}-${sourceRaw || source}-${authIndex}-${index}`,
           timestamp,
           timestampMs: Number.isNaN(timestampMs) ? 0 : timestampMs,
-          timestampLabel: date ? date.toLocaleString(i18n.language) : timestamp || '-',
+          timestampLabel: date ? formatUtcToLocalDateTime(date, i18n.language) : timestamp || '-',
           model,
           sourceRaw: sourceRaw || '-',
           source,
