@@ -65,21 +65,7 @@ export function TokenBreakdownChart({
       }))
     };
 
-    const baseOptions = buildChartOptions({ period, labels: series.labels, isDark, isMobile });
-    const options = {
-      ...baseOptions,
-      scales: {
-        ...baseOptions.scales,
-        y: {
-          ...baseOptions.scales?.y,
-          stacked: true
-        },
-        x: {
-          ...baseOptions.scales?.x,
-          stacked: true
-        }
-      }
-    };
+    const options = buildChartOptions({ period, labels: series.labels, isDark, isMobile });
 
     return { chartData: data, chartOptions: options };
   }, [usage, period, isDark, isMobile, hourWindowHours, t]);
