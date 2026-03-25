@@ -5,63 +5,95 @@ import type {
   PayloadParamEntry,
   PayloadParamValueType,
   PayloadRule,
+  VisualTopLevelApiKeyEntry,
   VisualConfigValues,
   VisualConfigValidationErrors,
   PayloadParamValidationErrorCode,
 } from '@/types/visualConfig';
-import { DEFAULT_VISUAL_VALUES } from '@/types/visualConfig';
+import { DEFAULT_VISUAL_VALUES, makeClientId } from '@/types/visualConfig';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
 }
 
-function extractApiKeyValue(raw: unknown): string | null {
+function parseTopLevelApiKeyEntry(
+  raw: unknown
+): Pick<VisualTopLevelApiKeyEntry, 'name' | 'apiKey' | 'hasExplicitName'> | null {
   if (typeof raw === 'string') {
     const trimmed = raw.trim();
-    return trimmed ? trimmed : null;
+    return trimmed ? { name: '', apiKey: trimmed, hasExplicitName: false } : null;
   }
 
   const record = asRecord(raw);
   if (!record) return null;
 
   const candidates = [record['api-key'], record.apiKey, record.key, record.Key];
+  let apiKey = '';
   for (const candidate of candidates) {
     if (typeof candidate === 'string') {
       const trimmed = candidate.trim();
-      if (trimmed) return trimmed;
+      if (trimmed) {
+        apiKey = trimmed;
+        break;
+      }
     }
   }
+  if (!apiKey) return null;
 
-  return null;
+  const name = typeof record.name === 'string' ? record.name.trim() : '';
+  return {
+    name,
+    apiKey,
+    hasExplicitName: Boolean(name),
+  };
 }
 
-function parseApiKeysText(raw: unknown): string {
-  if (!Array.isArray(raw)) return '';
+function parseTopLevelApiKeys(raw: unknown): VisualTopLevelApiKeyEntry[] {
+  if (!Array.isArray(raw)) return [];
 
-  const keys: string[] = [];
-  for (const item of raw) {
-    const key = extractApiKeyValue(item);
-    if (key) keys.push(key);
-  }
-  return keys.join('\n');
+  return raw
+    .map((item) => parseTopLevelApiKeyEntry(item))
+    .filter(Boolean)
+    .map((entry) => ({
+      id: makeClientId(),
+      name: entry!.name,
+      apiKey: entry!.apiKey,
+      hasExplicitName: entry!.hasExplicitName,
+    }));
 }
 
-function resolveApiKeysText(parsed: Record<string, unknown>): string {
+function resolveTopLevelApiKeys(parsed: Record<string, unknown>): VisualTopLevelApiKeyEntry[] {
   if (Object.prototype.hasOwnProperty.call(parsed, 'api-keys')) {
-    return parseApiKeysText(parsed['api-keys']);
+    return parseTopLevelApiKeys(parsed['api-keys']);
   }
 
   const auth = asRecord(parsed.auth);
   const providers = asRecord(auth?.providers);
   const configApiKeyProvider = asRecord(providers?.['config-api-key']);
-  if (!configApiKeyProvider) return '';
+  if (!configApiKeyProvider) return [];
 
   if (Object.prototype.hasOwnProperty.call(configApiKeyProvider, 'api-key-entries')) {
-    return parseApiKeysText(configApiKeyProvider['api-key-entries']);
+    return parseTopLevelApiKeys(configApiKeyProvider['api-key-entries']);
   }
 
-  return parseApiKeysText(configApiKeyProvider['api-keys']);
+  return parseTopLevelApiKeys(configApiKeyProvider['api-keys']);
+}
+
+function serializeTopLevelApiKeys(
+  entries: VisualTopLevelApiKeyEntry[]
+): Array<string | Record<string, string>> {
+  return entries
+    .map((entry) => {
+      const apiKey = entry.apiKey.trim();
+      if (!apiKey) return null;
+      const name = entry.name.trim();
+      if (entry.hasExplicitName && name) {
+        return { name, 'api-key': apiKey };
+      }
+      return apiKey;
+    })
+    .filter(Boolean) as Array<string | Record<string, string>>;
 }
 
 type YamlDocument = ReturnType<typeof parseDocument>;
@@ -493,7 +525,7 @@ export function useVisualConfig() {
             : '',
 
         authDir: typeof parsed['auth-dir'] === 'string' ? parsed['auth-dir'] : '',
-        apiKeysText: resolveApiKeysText(parsed),
+        apiKeys: resolveTopLevelApiKeys(parsed),
 
         debug: Boolean(parsed.debug),
         commercialMode: Boolean(parsed['commercial-mode']),
@@ -589,10 +621,7 @@ export function useVisualConfig() {
         }
 
         setStringInDoc(doc, ['auth-dir'], values.authDir);
-        const apiKeys = values.apiKeysText
-          .split('\n')
-          .map((key) => key.trim())
-          .filter(Boolean);
+        const apiKeys = serializeTopLevelApiKeys(values.apiKeys);
         if (apiKeys.length > 0) {
           doc.setIn(['api-keys'], apiKeys);
         } else if (docHas(doc, ['api-keys'])) {

@@ -8,7 +8,12 @@ import {
   normalizeAuthIndex
 } from '@/utils/usage';
 import { authFilesApi } from '@/services/api/authFiles';
-import type { GeminiKeyConfig, ProviderKeyConfig, OpenAIProviderConfig } from '@/types';
+import type {
+  GeminiKeyConfig,
+  OpenAIProviderConfig,
+  ProviderKeyConfig,
+  TopLevelApiKeyConfig,
+} from '@/types';
 import type { AuthFileItem } from '@/types/authFile';
 import type { CredentialInfo } from '@/types/sourceInfo';
 import type { UsagePayload } from './hooks/useUsageData';
@@ -17,6 +22,7 @@ import styles from '@/pages/UsagePage.module.scss';
 export interface CredentialStatsCardProps {
   usage: UsagePayload | null;
   loading: boolean;
+  apiKeys: TopLevelApiKeyConfig[];
   geminiKeys: GeminiKeyConfig[];
   claudeConfigs: ProviderKeyConfig[];
   codexConfigs: ProviderKeyConfig[];
@@ -42,6 +48,7 @@ interface CredentialBucket {
 export function CredentialStatsCard({
   usage,
   loading,
+  apiKeys,
   geminiKeys,
   claudeConfigs,
   codexConfigs,
@@ -167,6 +174,14 @@ export function CredentialStatsCard({
     };
 
     // Provider rows — one row per config, stats merged across all its candidate source IDs
+    apiKeys.forEach((c, i) =>
+      addConfigRow(
+        c.apiKey,
+        undefined,
+        c.name?.trim() || `Unnamed key #${i + 1}`,
+        'api-key',
+        `top-level:${i}`
+      ));
     geminiKeys.forEach((c, i) =>
       addConfigRow(c.apiKey, c.prefix, c.prefix?.trim() || `Gemini #${i + 1}`, 'gemini', `gemini:${i}`));
     claudeConfigs.forEach((c, i) =>
@@ -267,7 +282,7 @@ export function CredentialStatsCard({
     });
 
     return result.sort((a, b) => b.total - a.total);
-  }, [usage, geminiKeys, claudeConfigs, codexConfigs, vertexConfigs, openaiProviders, authFileMap]);
+  }, [usage, apiKeys, geminiKeys, claudeConfigs, codexConfigs, vertexConfigs, openaiProviders, authFileMap]);
 
   return (
     <Card title={t('usage_stats.credential_stats')} className={styles.detailsFixedCard}>

@@ -368,6 +368,7 @@ export function UsagePage() {
       <RequestEventsDetailsCard
         usage={filteredUsage}
         loading={loading}
+        apiKeys={config?.apiKeys || []}
         geminiKeys={config?.geminiApiKeys || []}
         claudeConfigs={config?.claudeApiKeys || []}
         codexConfigs={config?.codexApiKeys || []}
@@ -379,6 +380,7 @@ export function UsagePage() {
       <CredentialStatsCard
         usage={filteredUsage}
         loading={loading}
+        apiKeys={config?.apiKeys || []}
         geminiKeys={config?.geminiApiKeys || []}
         claudeConfigs={config?.claudeApiKeys || []}
         codexConfigs={config?.codexApiKeys || []}
