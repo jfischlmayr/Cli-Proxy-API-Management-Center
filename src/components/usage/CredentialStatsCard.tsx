@@ -1,12 +1,6 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Card } from '@/components/ui/Card';
-import {
-  collectUsageDetails,
-  buildCandidateUsageSourceIds,
-  formatCompactNumber,
-  normalizeAuthIndex
-} from '@/utils/usage';
 import { authFilesApi } from '@/services/api/authFiles';
 import type {
   GeminiKeyConfig,
@@ -16,6 +10,8 @@ import type {
 } from '@/types';
 import type { AuthFileItem } from '@/types/authFile';
 import type { CredentialInfo } from '@/types/sourceInfo';
+import { buildSourceInfoMap, resolveSourceDisplay } from '@/utils/sourceResolver';
+import { collectUsageDetails, formatCompactNumber, normalizeAuthIndex } from '@/utils/usage';
 import type { UsagePayload } from './hooks/useUsageData';
 import styles from '@/pages/UsagePage.module.scss';
 
@@ -40,11 +36,6 @@ interface CredentialRow {
   successRate: number;
 }
 
-interface CredentialBucket {
-  success: number;
-  failure: number;
-}
-
 export function CredentialStatsCard({
   usage,
   loading,
@@ -58,67 +49,77 @@ export function CredentialStatsCard({
   const { t } = useTranslation();
   const [authFileMap, setAuthFileMap] = useState<Map<string, CredentialInfo>>(new Map());
 
-  // Fetch auth files for auth_index-based matching
   useEffect(() => {
     let cancelled = false;
+
     authFilesApi
       .list()
       .then((res) => {
         if (cancelled) return;
+
         const files = Array.isArray(res) ? res : (res as { files?: AuthFileItem[] })?.files;
         if (!Array.isArray(files)) return;
+
         const map = new Map<string, CredentialInfo>();
         files.forEach((file) => {
-          const rawAuthIndex = file['auth_index'] ?? file.authIndex;
-          const key = normalizeAuthIndex(rawAuthIndex);
-          if (key) {
-            map.set(key, {
-              name: file.name || key,
-              type: (file.type || file.provider || '').toString(),
-            });
-          }
+          const key = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
+          if (!key) return;
+
+          map.set(key, {
+            name: file.name || key,
+            type: (file.type || file.provider || '').toString(),
+          });
         });
         setAuthFileMap(map);
       })
       .catch(() => {});
-    return () => { cancelled = true; };
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // Aggregate rows: all from bySource only (no separate byAuthIndex rows to avoid duplicates).
-  // Auth files are used purely for name resolution of unmatched source IDs.
+  const sourceInfoMap = useMemo(
+    () =>
+      buildSourceInfoMap({
+        geminiApiKeys: geminiKeys,
+        claudeApiKeys: claudeConfigs,
+        codexApiKeys: codexConfigs,
+        vertexApiKeys: vertexConfigs,
+        openaiCompatibility: openaiProviders,
+      }),
+    [claudeConfigs, codexConfigs, geminiKeys, openaiProviders, vertexConfigs]
+  );
+
   const rows = useMemo((): CredentialRow[] => {
     if (!usage) return [];
-    const details = collectUsageDetails(usage);
-    const bySource: Record<string, CredentialBucket> = {};
-    const result: CredentialRow[] = [];
-    const consumedSourceIds = new Set<string>();
-    const authIndexToRowIndex = new Map<string, number>();
-    const sourceToAuthIndex = new Map<string, string>();
-    const sourceToAuthFile = new Map<string, CredentialInfo>();
-    const fallbackByAuthIndex = new Map<string, CredentialBucket>();
 
-    details.forEach((detail) => {
-      const authIdx = normalizeAuthIndex(detail.auth_index);
-      const source = detail.source;
-      const isFailed = detail.failed === true;
+    const rowMap = new Map<string, CredentialRow>();
 
-      if (!source) {
-        if (!authIdx) return;
-        const fallback = fallbackByAuthIndex.get(authIdx) ?? { success: 0, failure: 0 };
-        if (isFailed) {
-          fallback.failure += 1;
-        } else {
-          fallback.success += 1;
-        }
-        fallbackByAuthIndex.set(authIdx, fallback);
-        return;
-      }
+    collectUsageDetails(usage).forEach((detail) => {
+      const sourceInfo = resolveSourceDisplay(
+        detail.source ?? '',
+        detail.auth_index,
+        sourceInfoMap,
+        authFileMap
+      );
+      const key = sourceInfo.identityKey ?? sourceInfo.displayName;
+      const row =
+        rowMap.get(key) ??
+        ({
+          key,
+          displayName: sourceInfo.displayName,
+          type: sourceInfo.type,
+          success: 0,
+          failure: 0,
+          total: 0,
+          successRate: 100,
+        } satisfies CredentialRow);
 
-      const bucket = bySource[source] ?? { success: 0, failure: 0 };
-      if (isFailed) {
-        bucket.failure += 1;
+      if (detail.failed === true) {
+        row.failure += 1;
       } else {
-        bucket.success += 1;
+        row.success += 1;
       }
       bySource[source] = bucket;
 
@@ -290,51 +291,55 @@ export function CredentialStatsCard({
         <div className={styles.hint}>{t('common.loading')}</div>
       ) : rows.length > 0 ? (
         <div className={styles.detailsScroll}>
-        <div className={styles.tableWrapper}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th>{t('usage_stats.credential_name')}</th>
-                <th>{t('usage_stats.requests_count')}</th>
-                <th>{t('usage_stats.success_rate')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.key}>
-                  <td className={styles.modelCell}>
-                    <span>{row.displayName}</span>
-                    {row.type && (
-                      <span className={styles.credentialType}>{row.type}</span>
-                    )}
-                  </td>
-                  <td>
-                    <span className={styles.requestCountCell}>
-                      <span>{formatCompactNumber(row.total)}</span>
-                      <span className={styles.requestBreakdown}>
-                        (<span className={styles.statSuccess}>{row.success.toLocaleString()}</span>{' '}
-                        <span className={styles.statFailure}>{row.failure.toLocaleString()}</span>)
-                      </span>
-                    </span>
-                  </td>
-                  <td>
-                    <span
-                      className={
-                        row.successRate >= 95
-                          ? styles.statSuccess
-                          : row.successRate >= 80
-                            ? styles.statNeutral
-                            : styles.statFailure
-                      }
-                    >
-                      {row.successRate.toFixed(1)}%
-                    </span>
-                  </td>
+          <div className={styles.tableWrapper}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>{t('usage_stats.credential_name')}</th>
+                  <th>{t('usage_stats.requests_count')}</th>
+                  <th>{t('usage_stats.success_rate')}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.key}>
+                    <td className={styles.modelCell}>
+                      <span>{row.displayName}</span>
+                      {row.type && <span className={styles.credentialType}>{row.type}</span>}
+                    </td>
+                    <td>
+                      <span className={styles.requestCountCell}>
+                        <span>{formatCompactNumber(row.total)}</span>
+                        <span className={styles.requestBreakdown}>
+                          (
+                          <span className={styles.statSuccess}>
+                            {row.success.toLocaleString()}
+                          </span>{' '}
+                          <span className={styles.statFailure}>
+                            {row.failure.toLocaleString()}
+                          </span>
+                          )
+                        </span>
+                      </span>
+                    </td>
+                    <td>
+                      <span
+                        className={
+                          row.successRate >= 95
+                            ? styles.statSuccess
+                            : row.successRate >= 80
+                              ? styles.statNeutral
+                              : styles.statFailure
+                        }
+                      >
+                        {row.successRate.toFixed(1)}%
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       ) : (
         <div className={styles.hint}>{t('usage_stats.no_data')}</div>

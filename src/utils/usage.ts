@@ -4,7 +4,25 @@
  */
 
 import type { ScriptableContext } from 'chart.js';
+import type { LatencyAccumulator, LatencyStats } from './usage/latency';
+import {
+  addLatencySample,
+  calculateLatencyStatsFromDetails,
+  createLatencyAccumulator,
+  extractLatencyMs,
+  finalizeLatencyStats,
+} from './usage/latency';
 import { maskApiKey } from './format';
+import { parseTimestampMs } from './timestamp';
+
+export type { DurationFormatOptions, LatencyStats } from './usage/latency';
+export {
+  LATENCY_SOURCE_FIELD,
+  LATENCY_SOURCE_UNIT,
+  calculateLatencyStatsFromDetails,
+  extractLatencyMs,
+  formatDurationMs,
+} from './usage/latency';
 
 export interface KeyStatBucket {
   success: number;
@@ -38,7 +56,8 @@ export interface ModelPrice {
 export interface UsageDetail {
   timestamp: string;
   source: string;
-  auth_index: number;
+  auth_index: string | number | null;
+  latency_ms?: number;
   tokens: {
     input_tokens: number;
     output_tokens: number;
@@ -68,9 +87,24 @@ export interface ApiStats {
   totalCost: number;
   sources: Record<string, number>;
   models: Record<
+    
     string,
+   
     { requests: number; successCount: number; failureCount: number; tokens: number }
+  
   >;
+}
+
+export interface ModelStatsSummary {
+  model: string;
+  requests: number;
+  successCount: number;
+  failureCount: number;
+  tokens: number;
+  cost: number;
+  averageLatencyMs: number | null;
+  totalLatencyMs: number | null;
+  latencySampleCount: number;
 }
 
 export type UsageTimeRange = '7h' | '24h' | '7d' | 'all';
@@ -166,7 +200,7 @@ export function filterUsageByTimeRange<T>(
         if (!detailRecord || typeof detailRecord.timestamp !== 'string') {
           return;
         }
-        const timestamp = Date.parse(detailRecord.timestamp);
+        const timestamp = parseTimestampMs(detailRecord.timestamp);
         if (Number.isNaN(timestamp) || timestamp < windowStart || timestamp > nowMs) {
           return;
         }
@@ -347,6 +381,10 @@ export function buildCandidateUsageSourceIds(input: {
 
   const apiKey = input.apiKey?.trim();
   if (apiKey) {
+    // Include the normalised form first so that "non-standard" keys (e.g. short tokens,
+    // keys containing '/' etc.) that are classified as text by normalizeUsageSourceId()
+    // can still match usage details.
+    result.push(normalizeUsageSourceId(apiKey));
     result.push(`${USAGE_SOURCE_PREFIX_KEY}${fnv1a64Hex(apiKey)}`);
     result.push(`${USAGE_SOURCE_PREFIX_MASKED}${maskApiKey(apiKey)}`);
   }
@@ -512,12 +550,18 @@ export function collectUsageDetails(usageData: unknown): UsageDetail[] {
       modelDetails.forEach((detailRaw) => {
         if (!isRecord(detailRaw) || typeof detailRaw.timestamp !== 'string') return;
         const timestamp = detailRaw.timestamp;
-        const timestampMs = Date.parse(timestamp);
+        const timestampMs = parseTimestampMs(timestamp);
         const tokensRaw = isRecord(detailRaw.tokens) ? detailRaw.tokens : {};
+        const latencyMs = extractLatencyMs(detailRaw);
         details.push({
           timestamp,
           source: normalizeSource(detailRaw.source),
-          auth_index: detailRaw.auth_index as unknown as number,
+          auth_index:
+            (detailRaw?.auth_index ??
+              detailRaw?.authIndex ??
+              detailRaw?.AuthIndex ??
+              null) as UsageDetail['auth_index'],
+          latency_ms: latencyMs ?? undefined,
           tokens: tokensRaw as unknown as UsageDetail['tokens'],
           failed: detailRaw.failed === true,
           __modelName: modelName,
@@ -583,12 +627,18 @@ export function collectUsageDetailsWithEndpoint(usageData: unknown): UsageDetail
       modelDetails.forEach((detailRaw) => {
         if (!isRecord(detailRaw) || typeof detailRaw.timestamp !== 'string') return;
         const timestamp = detailRaw.timestamp;
-        const timestampMs = Date.parse(timestamp);
+        const timestampMs = parseTimestampMs(timestamp);
         const tokensRaw = isRecord(detailRaw.tokens) ? detailRaw.tokens : {};
+        const latencyMs = extractLatencyMs(detailRaw);
         details.push({
           timestamp,
           source: normalizeSource(detailRaw.source),
-          auth_index: detailRaw.auth_index as unknown as number,
+          auth_index:
+            (detailRaw?.auth_index ??
+              detailRaw?.authIndex ??
+              detailRaw?.AuthIndex ??
+              null) as UsageDetail['auth_index'],
+          latency_ms: latencyMs ?? undefined,
           tokens: tokensRaw as unknown as UsageDetail['tokens'],
           failed: detailRaw.failed === true,
           __modelName: modelName,
@@ -626,6 +676,13 @@ export function extractTotalTokens(detail: unknown): number {
   );
 
   return inputTokens + outputTokens + reasoningTokens + cachedTokens;
+}
+
+/**
+ * 计算耗时统计
+ */
+export function calculateLatencyStats(usageData: unknown): LatencyStats {
+  return calculateLatencyStatsFromDetails(collectUsageDetails(usageData));
 }
 
 /**
@@ -677,7 +734,7 @@ export function calculateRecentPerMinuteRates(
     const timestamp =
       typeof detail.__timestampMs === 'number'
         ? detail.__timestampMs
-        : Date.parse(detail.timestamp);
+        : parseTimestampMs(detail.timestamp);
     if (!Number.isFinite(timestamp) || timestamp < windowStart || timestamp > now) {
       return;
     }
@@ -935,20 +992,20 @@ export function getApiStats(
 export function getModelStats(
   usageData: unknown,
   modelPrices: Record<string, ModelPrice>
-): Array<{
-  model: string;
-  requests: number;
-  successCount: number;
-  failureCount: number;
-  tokens: number;
-  cost: number;
-}> {
+): ModelStatsSummary[] {
   const apis = getApisRecord(usageData);
   if (!apis) return [];
 
   const modelMap = new Map<
     string,
-    { requests: number; successCount: number; failureCount: number; tokens: number; cost: number }
+    {
+      requests: number;
+      successCount: number;
+      failureCount: number;
+      tokens: number;
+      cost: number;
+      latency: LatencyAccumulator;
+    }
   >();
 
   Object.values(apis).forEach((apiData) => {
@@ -965,6 +1022,7 @@ export function getModelStats(
         failureCount: 0,
         tokens: 0,
         cost: 0,
+        latency: createLatencyAccumulator(),
       };
       existing.requests += Number(modelData.total_requests) || 0;
       existing.tokens += Number(modelData.total_tokens) || 0;
@@ -980,9 +1038,10 @@ export function getModelStats(
         existing.failureCount += Number(modelData.failure_count) || 0;
       }
 
-      if (details.length > 0 && (!hasExplicitCounts || price)) {
+      if (details.length > 0) {
         details.forEach((detail) => {
           const detailRecord = isRecord(detail) ? detail : null;
+          const latencyMs = extractLatencyMs(detailRecord);
           if (!hasExplicitCounts) {
             if (detailRecord?.failed === true) {
               existing.failureCount += 1;
@@ -990,6 +1049,8 @@ export function getModelStats(
               existing.successCount += 1;
             }
           }
+
+          addLatencySample(existing.latency, latencyMs);
 
           if (price && detailRecord) {
             existing.cost += calculateCost(
@@ -1004,7 +1065,20 @@ export function getModelStats(
   });
 
   return Array.from(modelMap.entries())
-    .map(([model, stats]) => ({ model, ...stats }))
+    .map(([model, stats]) => {
+      const latencyStats = finalizeLatencyStats(stats.latency);
+      return {
+        model,
+        requests: stats.requests,
+        successCount: stats.successCount,
+        failureCount: stats.failureCount,
+        tokens: stats.tokens,
+        cost: stats.cost,
+        averageLatencyMs: latencyStats.averageMs,
+        totalLatencyMs: latencyStats.totalMs,
+        latencySampleCount: latencyStats.sampleCount,
+      };
+    })
     .sort((a, b) => b.requests - a.requests);
 }
 
@@ -1077,7 +1151,7 @@ export function buildHourlySeriesByModel(
     const timestamp =
       typeof detail.__timestampMs === 'number'
         ? detail.__timestampMs
-        : Date.parse(detail.timestamp);
+        : parseTimestampMs(detail.timestamp);
     if (!Number.isFinite(timestamp) || timestamp <= 0) {
       return;
     }
@@ -1136,7 +1210,7 @@ export function buildDailySeriesByModel(
     const timestamp =
       typeof detail.__timestampMs === 'number'
         ? detail.__timestampMs
-        : Date.parse(detail.timestamp);
+        : parseTimestampMs(detail.timestamp);
     if (!Number.isFinite(timestamp) || timestamp <= 0) {
       return;
     }
@@ -1339,7 +1413,7 @@ export interface StatusBarData {
 export function calculateStatusBarData(
   usageDetails: UsageDetail[],
   sourceFilter?: string,
-  authIndexFilter?: number
+  authIndexFilter?: string | number
 ): StatusBarData {
   const BLOCK_COUNT = 20;
   const BLOCK_DURATION_MS = 10 * 60 * 1000; // 10 minutes
@@ -1362,7 +1436,7 @@ export function calculateStatusBarData(
     const timestamp =
       typeof detail.__timestampMs === 'number'
         ? detail.__timestampMs
-        : Date.parse(detail.timestamp);
+        : parseTimestampMs(detail.timestamp);
     if (
       !Number.isFinite(timestamp) ||
       timestamp <= 0 ||
@@ -1470,7 +1544,7 @@ export function calculateServiceHealthData(usageDetails: UsageDetail[]): Service
     const timestamp =
       typeof detail.__timestampMs === 'number'
         ? detail.__timestampMs
-        : Date.parse(detail.timestamp);
+        : parseTimestampMs(detail.timestamp);
     if (
       !Number.isFinite(timestamp) ||
       timestamp <= 0 ||
@@ -1680,7 +1754,7 @@ export function buildHourlyTokenBreakdown(
     const timestamp =
       typeof detail.__timestampMs === 'number'
         ? detail.__timestampMs
-        : Date.parse(detail.timestamp);
+        : parseTimestampMs(detail.timestamp);
     if (!Number.isFinite(timestamp) || timestamp <= 0) return;
     const normalized = new Date(timestamp);
     normalized.setMinutes(0, 0, 0);
@@ -1722,7 +1796,7 @@ export function buildDailyTokenBreakdown(usageData: unknown): TokenBreakdownSeri
     const timestamp =
       typeof detail.__timestampMs === 'number'
         ? detail.__timestampMs
-        : Date.parse(detail.timestamp);
+        : parseTimestampMs(detail.timestamp);
     if (!Number.isFinite(timestamp) || timestamp <= 0) return;
     const dayLabel = formatDayLabel(new Date(timestamp));
     if (!dayLabel) return;
@@ -1799,7 +1873,7 @@ export function buildHourlyCostSeries(
     const timestamp =
       typeof detail.__timestampMs === 'number'
         ? detail.__timestampMs
-        : Date.parse(detail.timestamp);
+        : parseTimestampMs(detail.timestamp);
     if (!Number.isFinite(timestamp) || timestamp <= 0) return;
     const normalized = new Date(timestamp);
     normalized.setMinutes(0, 0, 0);
@@ -1834,7 +1908,7 @@ export function buildDailyCostSeries(
     const timestamp =
       typeof detail.__timestampMs === 'number'
         ? detail.__timestampMs
-        : Date.parse(detail.timestamp);
+        : parseTimestampMs(detail.timestamp);
     if (!Number.isFinite(timestamp) || timestamp <= 0) return;
     const dayLabel = formatDayLabel(new Date(timestamp));
     if (!dayLabel) return;

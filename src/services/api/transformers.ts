@@ -94,6 +94,12 @@ const normalizePrefix = (value: unknown): string | undefined => {
   return trimmed ? trimmed : undefined;
 };
 
+const normalizeAuthIndex = (value: unknown): string | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const trimmed = String(value).trim();
+  return trimmed ? trimmed : undefined;
+};
+
 const normalizeTopLevelApiKeyConfig = (item: unknown): TopLevelApiKeyConfig | null => {
   if (item === undefined || item === null) return null;
   const record = isRecord(item) ? item : null;
@@ -120,12 +126,17 @@ const normalizeApiKeyEntry = (entry: unknown): ApiKeyEntry | null => {
 
   const proxyUrl = record ? record['proxy-url'] ?? record.proxyUrl : undefined;
   const headers = record ? normalizeHeaders(record.headers) : undefined;
+  const authIndex = normalizeAuthIndex(
+    record?.['auth-index'] ?? record?.authIndex ?? record?.['auth_index']
+  );
 
-  return {
+  const result: ApiKeyEntry = {
     apiKey: trimmed,
     proxyUrl: proxyUrl ? String(proxyUrl) : undefined,
     headers
   };
+  if (authIndex) result.authIndex = authIndex;
+  return result;
 };
 
 const normalizeProviderKeyConfig = (item: unknown): ProviderKeyConfig | null => {
@@ -162,6 +173,10 @@ const normalizeProviderKeyConfig = (item: unknown): ProviderKeyConfig | null => 
       record?.excluded_models
   );
   if (excludedModels.length) config.excludedModels = excludedModels;
+  const authIndex = normalizeAuthIndex(
+    record?.['auth-index'] ?? record?.authIndex ?? record?.['auth_index']
+  );
+  if (authIndex) config.authIndex = authIndex;
 
   const cloakRaw = record?.cloak;
   if (isRecord(cloakRaw)) {
@@ -220,6 +235,10 @@ const normalizeGeminiKeyConfig = (item: unknown): GeminiKeyConfig | null => {
   if (headers) config.headers = headers;
   const excludedModels = normalizeExcludedModels(record?.['excluded-models'] ?? record?.excludedModels);
   if (excludedModels.length) config.excludedModels = excludedModels;
+  const authIndex = normalizeAuthIndex(
+    record?.['auth-index'] ?? record?.authIndex ?? record?.['auth_index']
+  );
+  if (authIndex) config.authIndex = authIndex;
   return config;
 };
 
@@ -257,6 +276,10 @@ const normalizeOpenAIProvider = (provider: unknown): OpenAIProviderConfig | null
   if (models.length) result.models = models;
   if (priority !== undefined) result.priority = Number(priority);
   if (testModel) result.testModel = String(testModel);
+  const authIndex = normalizeAuthIndex(
+    provider['auth-index'] ?? provider.authIndex ?? provider['auth_index']
+  );
+  if (authIndex) result.authIndex = authIndex;
   return result;
 };
 
@@ -382,7 +405,12 @@ export const normalizeConfigResponse = (raw: unknown): Config => {
   if (isRecord(quota)) {
     config.quotaExceeded = {
       switchProject: normalizeBoolean(quota['switch-project'] ?? quota.switchProject),
-      switchPreviewModel: normalizeBoolean(quota['switch-preview-model'] ?? quota.switchPreviewModel)
+      switchPreviewModel: normalizeBoolean(
+        quota['switch-preview-model'] ?? quota.switchPreviewModel
+      ),
+      antigravityCredits: normalizeBoolean(
+        quota['antigravity-credits'] ?? quota.antigravityCredits
+      )
     };
   }
 

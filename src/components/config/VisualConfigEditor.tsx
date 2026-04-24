@@ -180,7 +180,7 @@ export function VisualConfigEditor({
 }: VisualConfigEditorProps) {
   const { t } = useTranslation();
   const pageTransitionLayer = usePageTransitionLayer();
-  const isCurrentLayer = pageTransitionLayer ? pageTransitionLayer.status === 'current' : true;
+  const isCurrentLayer = pageTransitionLayer ? pageTransitionLayer.isCurrentLayer : true;
   const isMobile = useMediaQuery('(max-width: 768px)');
   const isFloatingSidebar = useMediaQuery('(min-width: 1025px)');
   const shouldRenderFloatingSidebar = !isMobile && isFloatingSidebar && isCurrentLayer;
@@ -335,6 +335,7 @@ export function VisualConfigEditor({
   );
 
   useEffect(() => {
+    if (!isCurrentLayer) return undefined;
     if (typeof IntersectionObserver === 'undefined') return undefined;
 
     const observer = new IntersectionObserver(
@@ -358,10 +359,10 @@ export function VisualConfigEditor({
     }
 
     return () => observer.disconnect();
-  }, [sections]);
+  }, [isCurrentLayer, sections]);
 
   useEffect(() => {
-    if (!isMobile) return;
+    if (!isCurrentLayer || !isMobile) return;
     const scroller = mobileNavScrollerRef.current;
     const button = mobileNavButtonRefs.current[activeSectionId];
     if (!scroller || !button) return;
@@ -379,7 +380,7 @@ export function VisualConfigEditor({
       left: targetLeft,
       behavior: 'smooth',
     });
-  }, [activeSectionId, isMobile]);
+  }, [activeSectionId, isCurrentLayer, isMobile]);
 
   const handleSectionJump = useCallback((sectionId: VisualSectionId) => {
     setActiveSectionId(sectionId);
@@ -888,6 +889,13 @@ export function VisualConfigEditor({
                     }
                   />
                 </FieldShell>
+                <Input
+                  label={t('config_management.visual.sections.network.session_affinity_ttl')}
+                  placeholder="1h"
+                  value={values.routingSessionAffinityTTL}
+                  onChange={(e) => onChange({ routingSessionAffinityTTL: e.target.value })}
+                  disabled={disabled}
+                />
               </SectionGrid>
 
               <SectionGrid>
@@ -899,6 +907,12 @@ export function VisualConfigEditor({
                   checked={values.forceModelPrefix}
                   disabled={disabled}
                   onChange={(forceModelPrefix) => onChange({ forceModelPrefix })}
+                />
+                <ToggleRow
+                  title={t('config_management.visual.sections.network.session_affinity')}
+                  checked={values.routingSessionAffinity}
+                  disabled={disabled}
+                  onChange={(routingSessionAffinity) => onChange({ routingSessionAffinity })}
                 />
                 <ToggleRow
                   title={t('config_management.visual.sections.network.ws_auth')}
@@ -935,6 +949,15 @@ export function VisualConfigEditor({
                 checked={values.quotaSwitchPreviewModel}
                 disabled={disabled}
                 onChange={(quotaSwitchPreviewModel) => onChange({ quotaSwitchPreviewModel })}
+              />
+              <ToggleRow
+                title={t('config_management.visual.sections.quota.antigravity_credits')}
+                description={t(
+                  'config_management.visual.sections.quota.antigravity_credits_desc'
+                )}
+                checked={values.quotaAntigravityCredits}
+                disabled={disabled}
+                onChange={(quotaAntigravityCredits) => onChange({ quotaAntigravityCredits })}
               />
             </SectionGrid>
           </ConfigSection>
